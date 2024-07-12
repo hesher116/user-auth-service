@@ -1,10 +1,15 @@
-version: '3.8'
-
 services:
   app:
-    build: .
+    build:
+      context: ./../../
+    container_name: user_auth_service_app
+    networks:
+      - my_custom_network
     ports:
       - "8045:8045"
+    environment:
+      - DB_HOST
+      - REDIS_PASSWORD=1111
     depends_on:
       - mongo
       - redis
@@ -16,12 +21,25 @@ services:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+    networks:
+      - my_custom_network
 
   redis:
     image: redis:latest
     container_name: redis_cache
+    networks:
+      - my_custom_network
     ports:
       - "6379:6379"
+    command: ["redis-server", "--requirepass", "1111"]
+    environment:
+      - REDIS_PASSWORD=1111
+      - REDIS_HOST=redis_cache
+
+
+networks:
+  my_custom_network:
+    driver: bridge
 
 volumes:
   mongo_data:
