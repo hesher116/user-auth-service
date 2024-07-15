@@ -155,4 +155,5 @@ func main() {
 	fmt.Println("Працює")
 
 	log.Fatal(http.ListenAndServe(":8045", nil))
+	fmt.Println("Працює повністю")
 }
