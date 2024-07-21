@@ -68,21 +68,17 @@ func (m *Module) authorizationHandler(c *gin.Context) {
 	cachedUser, err := m.redisCli.Get(ctx, user.Username).Result()
 	switch err {
 	case redis.Nil:
-		{
-			// Якщо користувача немає в Redis, перевіряємо в MongoDB
-			err := m.userCollection.FindOne(ctx, bson.M{"username": user.Username}).Decode(&user)
-			if err != nil {
-				c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-				return
-			}
+		// Якщо користувача немає в Redis, перевіряємо в MongoDB
+		err := m.userCollection.FindOne(ctx, bson.M{"username": user.Username}).Decode(&user)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
 		}
 	case nil:
 		json.Unmarshal([]byte(cachedUser), &user)
 	default:
-		{
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
 	// Перевірка пароля
