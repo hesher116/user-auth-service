@@ -9,7 +9,6 @@ services:
       - "8045:8045"
     environment:
       - DB_HOST
-      - REDIS_PASSWORD=1111
     depends_on:
       - mongo
       - redis
@@ -31,9 +30,7 @@ services:
       - my_custom_network
     ports:
       - "6379:6379"
-    command: ["redis-server", "--requirepass", "1111"]
     environment:
-      - REDIS_PASSWORD=1111
       - REDIS_HOST=redis_cache
 
 
