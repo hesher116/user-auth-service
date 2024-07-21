@@ -139,10 +139,9 @@ func main() {
 	fmt.Println("Підключено до Redis:", pong)
 
 	// Ініціалізація MongoDB
-	mongoProtocol := os.Getenv("MONGO_PROTOCOL")
 	mongoPort := os.Getenv("MONGO_PORT")
 	mongoHost := os.Getenv("MONGO_HOST")
-	mongoUrl := fmt.Sprintf("%s://%s:%s", mongoProtocol, mongoHost, mongoPort)
+	mongoUrl := fmt.Sprintf("mongodb://%s:%s", mongoHost, mongoPort)
 	clientOptions := options.Client().ApplyURI(mongoUrl)
 	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
