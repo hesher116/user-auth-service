@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
@@ -21,139 +22,158 @@ type User struct {
 	Password string             `json:"password" bson:"password"`
 }
 
-var (
-	ctx            = context.Background()
+type Module struct {
 	rdb            *redis.Client
-	mongoClient    *mongo.Client
 	userCollection *mongo.Collection
-)
+}
 
-func init() {
-	// Завантаження змінних середовища з файлу .env
+func (m *Module) registerHandler(c *gin.Context) {
+	ctx := c.Request.Context()
+	var user User
+	if err := c.BindJSON(&user); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Вставка користувача в MongoDB
+	_, err := m.userCollection.InsertOne(ctx, user)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Кешування користувача в Redis
+	userJson, err := json.Marshal(user)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"Failed to marshal user data": err.Error()})
+	}
+	err = m.rdb.Set(ctx, user.Username, userJson, 0).Err()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, user)
+}
+
+func (m *Module) authorizationHandler(c *gin.Context) {
+	ctx := c.Request.Context()
+	var user User
+	if err := c.BindJSON(&user); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Перевірка в Redis
+	cachedUser, err := m.rdb.Get(ctx, user.Username).Result()
+	switch err {
+	case redis.Nil:
+		{
+			// Якщо користувача немає в Redis, перевіряємо в MongoDB
+			err := m.userCollection.FindOne(ctx, bson.M{"username": user.Username}).Decode(&user)
+			if err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+				return
+			}
+		}
+	case nil:
+		json.Unmarshal([]byte(cachedUser), &user)
+	default:
+		{
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	// Перевірка пароля
+	if user.Password != c.PostForm("password") {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Authorization successful"})
+}
+
+func (m *Module) deleteHandler(c *gin.Context) {
+	ctx := c.Request.Context()
+	var user User
+	if err := c.BindJSON(&user); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Видалення користувача з MongoDB
+	_, err := m.userCollection.DeleteOne(ctx, bson.M{"username": user.Username})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Видалення користувача з Redis
+	err = m.rdb.Del(ctx, user.Username).Err()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "User deleted"})
+}
+
+func main() {
 	err := godotenv.Load()
 	if err != nil {
-		log.Fatalf("Error loading .env file")
+		fmt.Println("Помилка завантаження .env файлу: %v", err)
 	}
+	fmt.Println("redisPort", os.Getenv("REDIS_PORT"))
 
+	redisPort := os.Getenv("REDIS_PORT")
+	redisHost := os.Getenv("REDIS_HOST")
+	redisPassword := os.Getenv("REDIS_PASSWORD")
+	redisUrl := fmt.Sprintf("%s:%s", redisHost, redisPort)
 	// Ініціалізація Redis
-	rdb = redis.NewClient(&redis.Options{
-		Addr:     "redis_cache:6379", // Ім'я контейнера замість localhost
-		Password: os.Getenv("REDIS_PASSWORD"),
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     redisUrl, // Ім'я контейнера замість localhost
+		Password: redisPassword,
 		DB:       0, // Використання стандартної бази даних
 	})
-	fmt.Println("AAAAA")
-	err = rdb.Set(ctx, "key", "value", 0).Err()
-	if err != nil {
-		panic(err)
-	}
 
-	val, err := rdb.Get(ctx, "key").Result()
-	rdb.Set(ctx, "key", "value", 0)
+	// Перевірка підключення до Redis
+	ctx := context.Background()
+	pong, err := rdb.Ping(ctx).Result()
 	if err != nil {
-		panic(err)
+		log.Fatalf("Помилка підключення:", err)
+		return
 	}
-	fmt.Println("key", val)
+	fmt.Println("Підключено до Redis:", pong)
 
 	// Ініціалізація MongoDB
-	clientOptions := options.Client().ApplyURI("mongodb://mongo_db:27017")
+	mongoProtocol := os.Getenv("MONGO_PROTOCOL")
+	mongoPort := os.Getenv("MONGO_PORT")
+	mongoHost := os.Getenv("MONGO_HOST")
+	mongoUrl := fmt.Sprintf("%s://%s:%s", mongoProtocol, mongoHost, mongoPort)
+	clientOptions := options.Client().ApplyURI(mongoUrl)
 	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	mongoClient = client
-	userCollection = client.Database("test").Collection("users")
-}
+	//mongoClient = client
+	userCollection := client.Database("test").Collection("users")
 
-func registerHandler(w http.ResponseWriter, r *http.Request) {
-	var user User
-	json.NewDecoder(r.Body).Decode(&user)
-
-	// Вставка користувача в MongoDB
-	_, err := userCollection.InsertOne(ctx, user)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	module := &Module{
+		rdb:            rdb,
+		userCollection: userCollection,
 	}
 
-	// Кешування користувача в Redis
-	userJson, _ := json.Marshal(user)
-	err = rdb.Set(ctx, user.Username, userJson, 0).Err()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	router := gin.Default()
 
-	w.WriteHeader(http.StatusCreated)
-}
-
-func authorizationHandler(w http.ResponseWriter, r *http.Request) {
-	var user User
-	json.NewDecoder(r.Body).Decode(&user)
-
-	// Перевірка в Redis
-	cachedUser, err := rdb.Get(ctx, user.Username).Result()
-	if err == redis.Nil {
-		// Якщо користувача немає в Redis, перевіряємо в MongoDB
-		err := userCollection.FindOne(ctx, bson.M{"username": user.Username}).Decode(&user)
-		if err != nil {
-			http.Error(w, "User not found", http.StatusNotFound)
-			return
-		}
-	} else if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	} else {
-		json.Unmarshal([]byte(cachedUser), &user)
-	}
-
-	// Перевірка пароля
-	if user.Password != r.FormValue("password") {
-		http.Error(w, "Invalid password", http.StatusUnauthorized)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
-func deleteHandler(w http.ResponseWriter, r *http.Request) {
-	var user User
-	json.NewDecoder(r.Body).Decode(&user)
-
-	// Видалення користувача з MongoDB
-	_, err := userCollection.DeleteOne(ctx, bson.M{"username": user.Username})
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Видалення користувача з Redis
-	err = rdb.Del(ctx, user.Username).Err()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
-func main() {
-	// Перевірка підключення до Redis
-	pong, err := rdb.Ping(ctx).Result()
-	if err != nil {
-		fmt.Println("Помилка підключення:", err)
-		return
-	}
-	fmt.Println("Підключено до Redis:", pong)
-
-	http.HandleFunc("/api/v1/register", registerHandler)
-	http.HandleFunc("/api/v1/authorization", authorizationHandler)
-	//http.HandleFunc("/api/v1/delete", deleteHandler)
-	s, _ := rdb.Get(ctx, "key").Result()
-	fmt.Println(s)
+	// Маршрутизація
+	router.POST("/api/v1/register", module.registerHandler)
+	router.POST("/api/v1/authorization", module.authorizationHandler)
+	fmt.Println()
+	router.DELETE("/api/v1/delete", module.deleteHandler)
 
 	fmt.Println("Працює")
-
-	log.Fatal(http.ListenAndServe(":8045", nil))
-	fmt.Println("Працює повністю")
+	// Запуск сервера
+	log.Fatal(router.Run(":8045"))
 }
