@@ -23,14 +23,14 @@ type User struct {
 }
 
 type Module struct {
-	rdb            *redis.Client
+	redisCli       *redis.Client
 	userCollection *mongo.Collection
 }
 
 func (m *Module) registerHandler(c *gin.Context) {
 	ctx := c.Request.Context()
 	var user User
-	if err := c.BindJSON(&user); err != nil {
+	if err := c.ShouldBindJSON(&user); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -47,7 +47,7 @@ func (m *Module) registerHandler(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"Failed to marshal user data": err.Error()})
 	}
-	err = m.rdb.Set(ctx, user.Username, userJson, 0).Err()
+	err = m.redisCli.Set(ctx, user.Username, userJson, 0).Err()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -59,13 +59,13 @@ func (m *Module) registerHandler(c *gin.Context) {
 func (m *Module) authorizationHandler(c *gin.Context) {
 	ctx := c.Request.Context()
 	var user User
-	if err := c.BindJSON(&user); err != nil {
+	if err := c.ShouldBindJSON(&user); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	// Перевірка в Redis
-	cachedUser, err := m.rdb.Get(ctx, user.Username).Result()
+	cachedUser, err := m.redisCli.Get(ctx, user.Username).Result()
 	switch err {
 	case redis.Nil:
 		{
@@ -97,7 +97,7 @@ func (m *Module) authorizationHandler(c *gin.Context) {
 func (m *Module) deleteHandler(c *gin.Context) {
 	ctx := c.Request.Context()
 	var user User
-	if err := c.BindJSON(&user); err != nil {
+	if err := c.ShouldBindJSON(&user); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -110,7 +110,7 @@ func (m *Module) deleteHandler(c *gin.Context) {
 	}
 
 	// Видалення користувача з Redis
-	err = m.rdb.Del(ctx, user.Username).Err()
+	err = m.redisCli.Del(ctx, user.Username).Err()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -121,20 +121,16 @@ func (m *Module) deleteHandler(c *gin.Context) {
 
 func main() {
 	err := godotenv.Load()
-	if err != nil {
-		fmt.Println("Помилка завантаження .env файлу: %v", err)
-	}
+
 	fmt.Println("redisPort", os.Getenv("REDIS_PORT"))
 
 	redisPort := os.Getenv("REDIS_PORT")
 	redisHost := os.Getenv("REDIS_HOST")
-	redisPassword := os.Getenv("REDIS_PASSWORD")
 	redisUrl := fmt.Sprintf("%s:%s", redisHost, redisPort)
 	// Ініціалізація Redis
 	rdb := redis.NewClient(&redis.Options{
-		Addr:     redisUrl, // Ім'я контейнера замість localhost
-		Password: redisPassword,
-		DB:       0, // Використання стандартної бази даних
+		Addr: redisUrl, // Ім'я контейнера замість localhost
+		DB:   0,        // Використання стандартної бази даних
 	})
 
 	// Перевірка підключення до Redis
@@ -161,7 +157,7 @@ func main() {
 	userCollection := client.Database("test").Collection("users")
 
 	module := &Module{
-		rdb:            rdb,
+		redisCli:       rdb,
 		userCollection: userCollection,
 	}
 
