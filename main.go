@@ -17,7 +17,7 @@ import (
 )
 
 type User struct {
-	ID       primitive.ObjectID `bson:"_id,omitempty"`
+	ID       primitive.ObjectID `json:"ID" bson:"_id,omitempty"`
 	Username string             `json:"username" bson:"username"`
 	Password string             `json:"password" bson:"password"`
 }
@@ -58,14 +58,15 @@ func (m *Module) registerHandler(c *gin.Context) {
 
 func (m *Module) authorizationHandler(c *gin.Context) {
 	ctx := c.Request.Context()
-	var user User
-	if err := c.ShouldBindJSON(&user); err != nil {
+	var reqUser User
+	if err := c.ShouldBindJSON(&reqUser); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	// Перевірка в Redis
-	cachedUser, err := m.redisCli.Get(ctx, user.Username).Result()
+	var user User
+	cachedUser, err := m.redisCli.Get(ctx, reqUser.Username).Result()
 	switch err {
 	case redis.Nil:
 		// Якщо користувача немає в Redis, перевіряємо в MongoDB
@@ -75,14 +76,18 @@ func (m *Module) authorizationHandler(c *gin.Context) {
 			return
 		}
 	case nil:
-		json.Unmarshal([]byte(cachedUser), &user)
+		err := json.Unmarshal([]byte(cachedUser), &user)
+		if err != nil {
+			return
+		}
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	// Перевірка пароля
-	if user.Password != c.PostForm("password") {
+
+	if user.Password != reqUser.Password {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
 		return
 	}
@@ -116,7 +121,7 @@ func (m *Module) deleteHandler(c *gin.Context) {
 }
 
 func main() {
-	err := godotenv.Load()
+	godotenv.Load()
 
 	fmt.Println("redisPort", os.Getenv("REDIS_PORT"))
 
@@ -133,7 +138,7 @@ func main() {
 	ctx := context.Background()
 	pong, err := rdb.Ping(ctx).Result()
 	if err != nil {
-		log.Fatalf("Помилка підключення:", err)
+		log.Fatal("Помилка підключення:", err)
 		return
 	}
 	fmt.Println("Підключено до Redis:", pong)
@@ -161,10 +166,7 @@ func main() {
 	// Маршрутизація
 	router.POST("/api/v1/register", module.registerHandler)
 	router.POST("/api/v1/authorization", module.authorizationHandler)
-	fmt.Println()
 	router.DELETE("/api/v1/delete", module.deleteHandler)
 
-	fmt.Println("Працює")
-	// Запуск сервера
 	log.Fatal(router.Run(":8045"))
 }
